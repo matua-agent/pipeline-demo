@@ -1,9 +1,6 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { NextRequest, NextResponse } from "next/server";
 
-const client = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-});
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
 export const STAGE_DEFINITIONS = [
   {
@@ -91,6 +88,13 @@ interface StageRequest {
   previousResults: Record<string, string>;
 }
 
+interface AnthropicMessage {
+  model: string;
+  max_tokens: number;
+  system: string;
+  messages: Array<{ role: string; content: string }>;
+}
+
 function buildUserMessage(stageIndex: number, document: string, previousResults: Record<string, string>): string {
   if (stageIndex === 0) {
     return `Analyze this document:\n\n---\n${document}\n---`;
@@ -112,6 +116,25 @@ function buildUserMessage(stageIndex: number, document: string, previousResults:
   return stageParts.join("\n");
 }
 
+async function callAnthropic(payload: AnthropicMessage) {
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "x-api-key": ANTHROPIC_API_KEY!,
+      "anthropic-version": "2023-06-01",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    throw new Error(`Anthropic API error ${response.status}: ${errorBody}`);
+  }
+
+  return response.json();
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body: StageRequest = await request.json();
@@ -128,7 +151,7 @@ export async function POST(request: NextRequest) {
     const stage = STAGE_DEFINITIONS[stageIndex];
     const start = Date.now();
 
-    const response = await client.messages.create({
+    const data = await callAnthropic({
       model: "claude-haiku-4-5",
       max_tokens: 1024,
       system: stage.systemPrompt,
@@ -141,7 +164,7 @@ export async function POST(request: NextRequest) {
     });
 
     const elapsed = Date.now() - start;
-    const content = response.content[0].type === "text" ? response.content[0].text : "";
+    const content = data.content[0].type === "text" ? data.content[0].text : "";
 
     return NextResponse.json({
       stageId: stage.id,
@@ -152,11 +175,11 @@ export async function POST(request: NextRequest) {
         label: elapsed < 1000 ? `${elapsed}ms` : `${(elapsed / 1000).toFixed(1)}s`,
       },
       usage: {
-        inputTokens: response.usage.input_tokens,
-        outputTokens: response.usage.output_tokens,
-        total: response.usage.input_tokens + response.usage.output_tokens,
+        inputTokens: data.usage.input_tokens,
+        outputTokens: data.usage.output_tokens,
+        total: data.usage.input_tokens + data.usage.output_tokens,
       },
-      model: response.model,
+      model: data.model,
     });
   } catch (error) {
     console.error("Pipeline stage error:", error);
